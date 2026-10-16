@@ -1,0 +1,28 @@
+name: Usage feedback / 使用反馈
+description: Share a real trial, a problem, or an improvement request.
+title: "[Feedback] "
+body:
+  - type: markdown
+    attributes:
+      value: "Thanks for trying Buffer Publisher. Please do not share API keys, private posts, real account IDs, or unredacted screenshots."
+  - type: input
+    id: environment
+    attributes:
+      label: Client, operating system, and Node version / 使用环境
+      placeholder: "For example: Codex, Windows 11, Node 22"
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: What did you try? / 试用了什么功能？
+      description: "Offline preview, draft, scheduling, verification, or local media upload."
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What happened? / 实际结果
+      description: "Tell us whether it worked and what could be improved. Share sanitized errors only."
+    validations:
+      required: true

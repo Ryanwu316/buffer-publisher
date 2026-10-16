@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+coverage/
+.env
+.env.*
+!.env.example
+*.env
+secrets/
+work/
+*.log
+post*.json
+payload*.json
