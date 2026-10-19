@@ -1,10 +1,11 @@
 # Buffer API notes
 
-Official documentation checked on 2026-10-16. Recheck the live schema if Buffer rejects a query; do not guess fields or silently switch to the retired REST API.
+Official authentication and first-post documentation checked on 2026-10-19. Recheck the live schema if Buffer rejects a query; do not guess fields or silently switch to the retired REST API.
 
 - Endpoint: `https://api.buffer.com`, GraphQL over POST.
 - Authentication: `Authorization: Bearer <personal API key>`, for the user's own Buffer account.
 - Discovery: `account { organizations { id name } }`, then `channels(input: {organizationId: ...}) {id name service}`.
+- `doctor --online` uses only these discovery queries; a successful result proves read access at that moment, not permission to create posts.
 - Creation: `createPost(input: CreatePostInput!)`, with `schedulingType: automatic`.
 - Draft: `mode: addToQueue`, `saveToDraft: true`.
 - Queue: `mode: addToQueue`.

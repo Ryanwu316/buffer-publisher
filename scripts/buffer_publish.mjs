@@ -7,8 +7,8 @@ import { pathToFileURL } from 'node:url';
 const ENDPOINT = 'https://api.buffer.com';
 const WRITE_COMMANDS = ['draft', 'queue', 'schedule'];
 const VALUE_OPTIONS = new Set(['channel-id', 'text', 'due-at', 'json-file', 'image-url', 'video-url',
-  'post-id', 'post-ids', 'expected-status', 'expected-due-at', 'expected-channel-id', 'min-assets']);
-const FLAG_OPTIONS = new Set(['dry-run', 'help', 'version']);
+  'post-id', 'post-ids', 'expected-status', 'expected-due-at', 'expected-channel-id', 'expected-text-file', 'min-assets']);
+const FLAG_OPTIONS = new Set(['dry-run', 'help', 'version', 'online']);
 const camel = key => key.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 
 export function parseArgs(args) {
@@ -74,6 +74,16 @@ export function normalizePostInput(command, options, payload = {}, now = Date.no
   const allowed = new Set(['channelIds', 'text', 'assets', 'dueAt', 'mode']);
   for (const key of Object.keys(payload)) if (!allowed.has(key)) throw new Error(`Unknown payload field: ${key}`);
   if (payload.mode !== undefined && payload.mode !== command) throw new Error('payload.mode must match the command.');
+  const sources = [['channelIds', 'channelId'], ['text', 'text'], ['dueAt', 'dueAt'],
+    ['assets', 'imageUrl'], ['assets', 'videoUrl']];
+  for (const [field, option] of sources) {
+    if (Object.hasOwn(payload, field) && options[option] !== undefined) {
+      throw new Error(`Conflicting input for ${field}: choose JSON or CLI options for this field, not both.`);
+    }
+  }
+  for (const field of ['channelIds', 'text', 'assets', 'dueAt']) {
+    if (Object.hasOwn(payload, field) && payload[field] === null) throw new Error(`payload.${field} cannot be null.`);
+  }
   const channelIds = payload.channelIds ?? (options.channelId ? [options.channelId] : []);
   if (!Array.isArray(channelIds) || channelIds.length === 0) throw new Error('Provide --channel-id or payload.channelIds.');
   channelIds.forEach(id => nonempty(id, 'Channel ID'));
@@ -100,17 +110,52 @@ export function createPostInput(channelId, post) {
   return input;
 }
 
-export async function loadToken(environment = process.env) {
-  if (environment.BUFFER_API_KEY?.trim()) return environment.BUFFER_API_KEY.trim();
+export async function loadToken(environment = process.env, read = readFile) {
+  const validate = value => {
+    const key = value.trim();
+    if (!key || key === 'REPLACE_WITH_YOUR_PRIVATE_KEY') throw new Error('Configure your own non-empty Buffer API key in the private environment or key file.');
+    return key;
+  };
+  if (environment.BUFFER_API_KEY?.trim()) return validate(environment.BUFFER_API_KEY);
   const file = environment.BUFFER_API_KEY_FILE || resolve(homedir(), '.codex/secrets/buffer-publisher.env');
   try {
-    const content = await readFile(file, 'utf8');
+    const content = await read(file, 'utf8');
     const value = content.match(/^\s*(?:export\s+)?BUFFER_API_KEY\s*=\s*(.+?)\s*$/m)?.[1];
-    if (value) return value.replace(/^(["'])(.*)\1$/, '$2').trim();
+    if (value) return validate(value.replace(/^(["'])(.*)\1$/, '$2'));
   } catch (error) {
+    if (!error.code) throw error;
     if (error.code !== 'ENOENT') throw new Error('Cannot read the Buffer key file. Check its path and permissions.');
   }
   throw new Error('Set BUFFER_API_KEY or BUFFER_API_KEY_FILE. Never put your key in a post JSON file.');
+}
+
+export async function doctor({ online = false, environment = process.env, nodeVersion = process.versions.node,
+  read = readFile, graphql } = {}) {
+  const checks = [];
+  const supported = Number(nodeVersion.split('.')[0]) >= 20;
+  checks.push({ name: 'runtime', ok: supported, message: supported ? `Node.js ${nodeVersion} is supported.` : 'Install Node.js 20 or newer.' });
+  let token;
+  try {
+    token = await loadToken(environment, read);
+    checks.push({ name: 'credentials', ok: true, message: 'A key is configured. Offline checks do not validate it with Buffer.' });
+  } catch (error) {
+    checks.push({ name: 'credentials', ok: false, message: error.message });
+  }
+  if (online) {
+    if (!supported || !token) checks.push({ name: 'connection', ok: false, skipped: true, message: 'Fix local checks before connecting.' });
+    else {
+      try {
+        const organizations = await listChannels(graphql ?? createClient({ token }));
+        const channelCount = organizations.reduce((total, org) => total + org.channels.length, 0);
+        checks.push({ name: 'connection', ok: true, organizationCount: organizations.length, channelCount,
+          message: channelCount ? 'Read-only connection succeeded. No posts were created.' : 'Connected, but no channels are visible. Connect a social channel in Buffer before drafting.' });
+      } catch {
+        checks.push({ name: 'connection', ok: false,
+          message: 'Read-only connection failed. Check network access, API key validity, permissions, and Buffer service or quota. No posts were created.' });
+      }
+    }
+  }
+  return { ok: checks.every(check => check.ok), version: '1.1.0', online, checks };
 }
 
 export function createClient({ token, fetchImpl = globalThis.fetch }) {
@@ -203,8 +248,8 @@ export async function createPosts(graphql, post) {
 function validateOptions(command, options) {
   const writes = ['channelId', 'text', 'dueAt', 'jsonFile', 'imageUrl', 'videoUrl', 'dryRun'];
   const reads = ['postId', 'postIds'];
-  const verifies = [...reads, 'expectedStatus', 'expectedDueAt', 'expectedChannelId', 'minAssets'];
-  const allowed = WRITE_COMMANDS.includes(command) ? writes : command === 'verify' ? verifies : command === 'get' ? reads : [];
+  const verifies = [...reads, 'expectedStatus', 'expectedDueAt', 'expectedChannelId', 'expectedTextFile', 'minAssets'];
+  const allowed = WRITE_COMMANDS.includes(command) ? writes : command === 'verify' ? verifies : command === 'get' ? reads : command === 'doctor' ? ['online'] : [];
   for (const key of Object.keys(options)) if (!['command', 'help', 'version', ...allowed].includes(key)) throw new Error(`Option ${key} is not valid with ${command}.`);
   if (options.expectedDueAt !== undefined) timestamp(options.expectedDueAt, 'expectedDueAt');
   if (options.minAssets !== undefined && (!/^\d+$/.test(options.minAssets) || !Number.isSafeInteger(Number(options.minAssets)))) {
@@ -212,19 +257,21 @@ function validateOptions(command, options) {
   }
 }
 
-export async function run(args, { graphql, read = readFile, now = Date.now() } = {}) {
+export async function run(args, { graphql, read = readFile, now = Date.now(), environment = process.env,
+  nodeVersion = process.versions.node, credentialRead = readFile } = {}) {
   const options = parseArgs(args);
   const { command } = options;
   if (command === 'help' || command === '--help' || options.help) return { ok: true, help: usage() };
-  if (command === '--version' || options.version) return { ok: true, version: '1.0.0' };
-  if (!['list', 'get', 'verify', ...WRITE_COMMANDS].includes(command)) throw new Error(`Unknown command: ${command}`);
+  if (command === '--version' || options.version) return { ok: true, version: '1.1.0' };
+  if (!['doctor', 'list', 'get', 'verify', ...WRITE_COMMANDS].includes(command)) throw new Error(`Unknown command: ${command}`);
   validateOptions(command, options);
+  if (command === 'doctor') return doctor({ online: !!options.online, environment, nodeVersion, read: credentialRead, graphql });
   let post;
   let ids;
   if (WRITE_COMMANDS.includes(command)) {
     let payload = {};
     if (options.jsonFile) {
-      try { payload = JSON.parse(await read(options.jsonFile, 'utf8')); }
+      try { payload = JSON.parse((await read(options.jsonFile, 'utf8')).replace(/^\uFEFF/, '')); }
       catch { throw new Error('Cannot read --json-file as UTF-8 JSON.'); }
     }
     post = normalizePostInput(command, options, payload, now);
@@ -234,20 +281,29 @@ export async function run(args, { graphql, read = readFile, now = Date.now() } =
       ...(options.postIds ? options.postIds.split(',').map(id => id.trim()).filter(Boolean) : [])])];
     if (!ids.length) throw new Error('Provide --post-id or --post-ids.');
   }
-  graphql ??= createClient({ token: await loadToken() });
+  if (options.expectedTextFile) {
+    try { options.expectedText = (await read(options.expectedTextFile, 'utf8')).replace(/^\uFEFF/, ''); }
+    catch { throw new Error('Cannot read --expected-text-file as UTF-8 text.'); }
+  }
+  graphql ??= createClient({ token: await loadToken(environment, credentialRead) });
   if (post) return createPosts(graphql, post);
   if (command === 'list') return { ok: true, organizations: await listChannels(graphql) };
   const posts = [];
   for (const id of ids) {
-    const saved = await getPost(graphql, id);
-    const issues = command === 'verify' ? verificationIssues(saved, options) : [];
-    posts.push({ ...saved, ok: issues.length === 0, issues });
+    try {
+      const saved = await getPost(graphql, id);
+      const issues = command === 'verify' ? verificationIssues(saved, options) : [];
+      posts.push({ ...saved, ok: issues.length === 0, issues });
+    } catch (error) {
+      posts.push({ id, ok: false, error: error.message });
+    }
   }
   return { ok: posts.every(p => p.ok), posts };
 }
 
 function usage() {
   return [
+    'node scripts/buffer_publish.mjs doctor [--online]',
     'node scripts/buffer_publish.mjs list',
     'node scripts/buffer_publish.mjs draft --channel-id CHANNEL_ID --text TEXT [--dry-run]',
     'node scripts/buffer_publish.mjs queue --channel-id CHANNEL_ID --text TEXT [--dry-run]',
@@ -255,7 +311,7 @@ function usage() {
     'node scripts/buffer_publish.mjs draft --json-file examples/draft.json --dry-run',
     'node scripts/buffer_publish.mjs get --post-id POST_ID',
     'node scripts/buffer_publish.mjs verify --post-id POST_ID --expected-status scheduled --expected-channel-id CHANNEL_ID --min-assets 1',
-    'Optional: --image-url HTTPS_URL, --video-url HTTPS_URL, --post-ids ID1,ID2, --expected-due-at ISO_TIME',
+    'Optional: --image-url HTTPS_URL, --video-url HTTPS_URL, --post-ids ID1,ID2, --expected-due-at ISO_TIME, --expected-text-file PATH',
   ];
 }
 

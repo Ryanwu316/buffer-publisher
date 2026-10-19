@@ -14,8 +14,9 @@ An agent skill for drafting, scheduling, and verifying Buffer posts, with a depe
 | 功能 | 实现方式 |
 | --- | --- |
 | 查询组织与社媒渠道 | Buffer GraphQL，只读 |
+| 安装与连接自检 | `doctor` 检查本地配置；`doctor --online` 只读核对连接 |
 | 创建草稿、加入队列、指定时间排期 | CLI，创建后自动回读核验 |
-| 检查已有帖子 | 渠道、状态、时间、媒体数量 |
+| 检查已有帖子 | 渠道、状态、时间、媒体数量；可按文件逐字核对正文 |
 | 发布前预览 | `--dry-run`，无需密钥、不发请求 |
 | 本地图片 | Agent 操作 Buffer 网页上传，CLI 回读；CLI 本身不上传文件 |
 
@@ -60,6 +61,31 @@ $env:BUFFER_API_KEY_FILE = "$env:USERPROFILE/.config/buffer-publisher/key.env"
 ```
 
 macOS / Linux 可对已创建的密钥文件执行 `chmod 600`。不要把密钥发进聊天、写入帖子 JSON 或提交到 Git。兼容的旧位置为 `~/.codex/secrets/buffer-publisher.env`；环境变量 `BUFFER_API_KEY` 优先。`.env.example` 只是格式示例，工具不会自动读取仓库中的 `.env`。
+
+## 安装后自检
+
+```sh
+# 只检查本地 Node.js 版本和密钥配置，不发 API 请求
+node scripts/buffer_publish.mjs doctor
+
+# 只读验证 Buffer 连接，仅输出组织和渠道数量，不创建帖子
+node scripts/buffer_publish.mjs doctor --online
+```
+
+检查不通过时，查看 `checks` 中的提示。离线检查通过只表示密钥已配置；在线检查通过表示能读取组织和渠道，不能证明拥有写入权限。`channelCount: 0` 表示已连接但没有可见的社媒渠道，需要先在 Buffer 中关联账号。首次试用可按“离线预览 → 配置密钥 → 在线自检 → 创建一条真实草稿 → 在 Buffer 中确认”的顺序进行。
+
+## 从 1.0.0 升级
+
+通过 Git 安装的用户，在安装目录执行：
+
+```sh
+git status --short
+git pull --ff-only
+node scripts/buffer_publish.mjs --version
+node scripts/buffer_publish.mjs doctor --online
+```
+
+如果 `git status --short` 显示本地改动，先备份和处理这些改动；更新冲突时不要强制覆盖。通过 ZIP 安装的用户可将新版本解压到新目录，核对配置后切换。密钥仍保存在仓库外，无需复制到新版本目录。重新加载客户端使 Skill 的新说明生效。
 
 ## 先试预览，不连接账号
 
@@ -122,16 +148,24 @@ node scripts/buffer_publish.mjs schedule --channel-id CHANNEL_ID --text "Schedul
 # 读取 / 核验真实帖子
 node scripts/buffer_publish.mjs get --post-id POST_ID
 node scripts/buffer_publish.mjs verify --post-id POST_ID --expected-channel-id CHANNEL_ID --expected-status scheduled --min-assets 1
+
+# 网页编辑后，按已确认的 UTF-8 正文文件逐字核对
+node scripts/buffer_publish.mjs verify --post-id POST_ID --expected-text-file approved-post.txt
 ```
 
 `draft`、`queue`、`schedule` 去掉 `--dry-run` 后会写入 Buffer。`queue` 加入现有队列；`schedule` 使用指定未来时间，要求 `Z` 或明确时区偏移，并自动转为 UTC。`get --post-ids ID1,ID2` 可读取多个帖子。
 
 多行文案和多渠道示例见 [examples/draft.json](examples/draft.json)。排期 JSON 在同一结构中增加 `dueAt`；媒体增加 `assets: [{"image": {"url": "https://example.com/your-image.png"}}]`，URL 必须能由 Buffer 公网访问。CLI 不验证文件内容或平台规格，仍需检查网页预览。
 
+同一个字段只能选择一种输入来源。例如 JSON 中已经有 `assets: []` 时，不能再传 `--image-url`；请在 JSON 中填写图片，或删除 JSON 的 `assets` 字段后使用图片参数。新版会报告冲突，避免默默忽略图片、正文、渠道或时间参数。JSON 未包含的字段仍可由 CLI 补充；显式 `null` 不再被当成缺省值。UTF-8 BOM 格式的 JSON 文件受支持。
+
+`--expected-text-file` 保留正文换行和末尾空白，只忽略文件开头的 UTF-8 BOM。文件内容需与实际帖子一致；多出的末尾换行也会报告不匹配。
+
 ## 出错时
 
 - `ok: false` 和非零退出码表示未完成，查看 `issues`、`stage`、已返回的 `postId` 与 `skippedChannelIds`。
 - 多渠道创建遇到第一处错误即停止；已成功的帖子保留。先查看 Buffer 和已知 ID，再决定是否重试，避免重复发布。
+- 多帖子 `get` / `verify` 会分别报告每个 ID 的结果；一条读取失败不会丢掉其他结果，也不会中断后续读取。整体 `ok` 仍为 `false`，直到所有请求的帖子都成功核查。
 - 网络超时或缺少创建结果不代表没有创建成功。工具不自动重试写入，也不自动删除已创建帖子。
 - `assetCount: 0` 表示回读没有媒体。需要图片的帖子应保留草稿，完成上传后再排期。
 - HTTP 401 检查密钥；429 检查配额。具体限额以 Buffer 当前账号与官方说明为准。
@@ -142,7 +176,7 @@ node scripts/buffer_publish.mjs verify --post-id POST_ID --expected-channel-id C
 npm test
 ```
 
-测试使用 Node 内置测试框架和模拟 API，不需要密钥，也不会创建真实帖子。CI 在 Linux、Windows、macOS 上测试 Node 20、22、24。
+32 项测试使用 Node 内置测试框架和模拟 API，不需要密钥，也不会创建真实帖子。CI 在 Linux、Windows、macOS 上测试 Node 20、22、24。
 
 欢迎通过 [Issues](https://github.com/Ryanwu316/buffer-publisher/issues) 提交使用反馈：客户端、系统、使用的功能、观察到的结果和希望改进的地方即可。请勿提供 API Key、真实账号 ID、私人帖子或未脱敏截图。成功试用也可以留下反馈，帮助后续改进。
 

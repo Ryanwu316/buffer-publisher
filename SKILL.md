@@ -9,6 +9,8 @@ Use the bundled Node.js CLI for Buffer account discovery, post creation, and rea
 
 ## Resolve the publishing request
 
+For first-time setup or connection trouble, run `doctor` to check Node.js and local key configuration without making API requests. Use `doctor --online` when a live check is needed: it performs only organization/channel discovery and returns counts without account details. Do not treat an offline pass as proof that the key works, or a live discovery pass as proof of post-writing permissions. Ordinary publishing requests with an already working connection do not need repeated diagnostics.
+
 1. Read `list` to discover actual organizations and channels unless their IDs are already verified in the current task. Ask which account/channel only when the request remains ambiguous.
 2. Resolve the final copy, media, destination, and intended state: draft, queue, or exact schedule. Interpret dates in the user's established timezone; preserve the intended local time while converting to UTC. Ask for the timezone when it changes the outcome and is unknown.
 3. Preview the exact write with `--dry-run` when useful. This mode requires no API key and makes no API requests. It validates input but cannot prove Buffer accepts the post.
@@ -18,7 +20,11 @@ Use the bundled Node.js CLI for Buffer account discovery, post creation, and rea
 
 Use `draft`, `queue`, or `schedule` as requested. For multiline copy, prefer a UTF-8 JSON file with `channelIds`, `text`, optional `assets`, and optional `dueAt`. Match `mode` to the actual command if it is included. Hosted assets need public HTTPS URLs accessible to Buffer. Do not upload local files to a third-party host without authorization.
 
+For each field, choose JSON or CLI input, not both. A JSON `assets` field (including an empty array) cannot be combined with `--image-url` or `--video-url`; remove one source explicitly so requested media is not lost. CLI options may supply fields absent from JSON. Null values are invalid. UTF-8 files with a BOM are supported.
+
 The CLI reads back each created post and checks text, channel, intended status, scheduled time when supplied, and minimum media count. Inspect returned issues. It stops a batch at the first failure and reports skipped channels. A failed or interrupted mutation may have created a post: inspect Buffer before retrying; never rerun a whole batch without checking known post IDs.
+
+Use `get --post-ids ID1,ID2` when recovering known IDs. A failed read is reported per post, and later reads continue; keep the successful records when resolving the remaining gaps. To recheck copy after web edits, save the approved exact text to a UTF-8 file and pass `verify --expected-text-file PATH`. Line breaks and trailing whitespace are compared exactly; only a leading BOM is ignored.
 
 ## Local images: draft first
 

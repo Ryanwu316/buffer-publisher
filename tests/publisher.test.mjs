@@ -41,7 +41,7 @@ test('local paths, embedded credentials, and ambiguous media are rejected', () =
     [{ image: { url: 'https://example.com/a.png' }, video: { url: 'https://example.com/a.mp4' } }]]) {
     assert.throws(() => normalizePostInput('draft', {}, { ...base, assets }, now));
   }
-  assert.equal(normalizePostInput('draft', { imageUrl: 'https://example.com/image.png' }, base, now).assets.length, 0);
+  assert.throws(() => normalizePostInput('draft', { imageUrl: 'https://example.com/image.png' }, base, now), /Conflicting input for assets/);
   assert.throws(() => normalizePostInput('draft', {}, { ...base, channelIds: 'wrong' }, now), /channel/);
 });
 
